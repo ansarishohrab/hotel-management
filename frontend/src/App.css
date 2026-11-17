@@ -260,6 +260,21 @@
   box-shadow: 0 18px 48px rgb(34 49 40 / 7%);
 }
 
+.signed-in-note {
+  margin-bottom: 24px;
+  padding: 9px 11px;
+  border: 1px solid #e8ebe4;
+  border-radius: 4px;
+  background: #f8f9f5;
+  color: #777a72;
+  font-size: 10px;
+}
+
+.signed-in-note strong {
+  color: #344a3e;
+  font-weight: 600;
+}
+
 .step-indicator {
   gap: 6px;
   margin-bottom: 36px;
@@ -270,7 +285,8 @@
 }
 
 .step-indicator > span:nth-child(1),
-.step-indicator > span:nth-child(2) {
+.step-indicator > span:nth-child(2),
+.step-indicator > span:nth-child(3) {
   width: 19px;
   height: 3px;
   border-radius: 99px;
@@ -330,6 +346,93 @@
   color: #39453d;
   font-size: 12px;
   font-weight: 600;
+}
+
+.signup-form .form-label {
+  color: #39453d;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.onboarding-label {
+  margin-top: 15px;
+}
+
+.onboarding-label span {
+  color: #96978e;
+  font-size: 10px;
+  font-weight: 400;
+}
+
+.onboarding-control {
+  min-height: 46px;
+  border: 1px solid #e4e3dc;
+  border-radius: 5px;
+  background-color: #fff;
+  color: #303e36;
+  font-size: 12px;
+}
+
+.onboarding-control::placeholder {
+  color: #b8b8b0;
+}
+
+.onboarding-control:focus {
+  border-color: #51816d;
+  box-shadow: 0 0 0 3px rgb(40 93 79 / 9%);
+}
+
+.verified-phone {
+  display: flex;
+  min-height: 46px;
+  flex-direction: column;
+  justify-content: center;
+  gap: 3px;
+  margin-bottom: 19px;
+  padding: 7px 11px;
+  border: 1px solid #e7ebe3;
+  border-radius: 5px;
+  background: #f8f9f5;
+}
+
+.verified-phone span {
+  color: #777a72;
+  font-size: 8px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+}
+
+.verified-phone strong {
+  color: #344a3e;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.wizard-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  margin-top: 22px;
+}
+
+.wizard-actions .primary-button {
+  width: auto;
+  min-width: 175px;
+  margin-top: 0;
+  padding: 0 16px;
+}
+
+.wizard-actions .text-button,
+.header-signout {
+  color: #285d4f;
+  font-size: 11px;
+}
+
+.onboarding-spinner {
+  width: 30px;
+  height: 30px;
+  color: #285d4f;
 }
 
 .phone-field {
@@ -689,6 +792,15 @@
   .form-heading h2,
   .completion h2 {
     font-size: 32px;
+  }
+
+  .wizard-actions {
+    align-items: stretch;
+    flex-direction: column-reverse;
+  }
+
+  .wizard-actions .primary-button {
+    width: 100%;
   }
 }
 

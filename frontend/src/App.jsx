@@ -6,12 +6,29 @@ import {
   signOut,
 } from '@firebase/auth'
 import { auth } from './firebase'
+import { ApiError, getOnboarding, saveHotel, saveProfile } from './api'
 import './App.css'
 
 const countryOptions = [
   { callingCode: '+91', name: 'India' },
   { callingCode: '+1', name: 'United States' },
 ]
+
+const initialProfile = {
+  fullName: '',
+  email: '',
+  role: 'Owner',
+}
+
+const initialHotel = {
+  name: '',
+  propertyType: 'Hotel',
+  address: '',
+  city: '',
+  region: '',
+  postalCode: '',
+  country: 'India',
+}
 
 const firebaseErrorMessages = {
   'auth/invalid-phone-number': 'Enter a valid phone number.',
@@ -27,6 +44,7 @@ const firebaseErrorMessages = {
 }
 
 function getFirebaseErrorMessage(error, fallback) {
+  if (error instanceof ApiError) return error.message
   const errorCode = typeof error?.code === 'string' ? error.code : 'unknown'
   return firebaseErrorMessages[errorCode] || `${fallback} (Firebase error: ${errorCode}).`
 }
@@ -73,19 +91,87 @@ function App() {
   const [user, setUser] = useState(null)
   const [isSendingCode, setIsSendingCode] = useState(false)
   const [isVerifyingCode, setIsVerifyingCode] = useState(false)
+  const [isCheckingSession, setIsCheckingSession] = useState(true)
+  const [isSavingProfile, setIsSavingProfile] = useState(false)
+  const [isSavingHotel, setIsSavingHotel] = useState(false)
+  const [profile, setProfile] = useState(initialProfile)
+  const [hotel, setHotel] = useState(initialHotel)
+  const [hotelId, setHotelId] = useState('')
   const recaptchaContainerRef = useRef(null)
   const recaptchaVerifierRef = useRef(null)
   const confirmationResultRef = useRef(null)
 
   useEffect(() => {
+    let active = true
     const unsubscribe = onAuthStateChanged(auth, (authUser) => {
+      if (!active) return
+
       setUser(authUser)
-      setStep((currentStep) => (
-        authUser ? 'complete' : currentStep === 'complete' ? 'phone' : currentStep
-      ))
+      setError('')
+
+      if (!authUser) {
+        confirmationResultRef.current = null
+        setProfile(initialProfile)
+        setHotel(initialHotel)
+        setHotelId('')
+        setStep('phone')
+        setIsCheckingSession(false)
+        return
+      }
+
+      setIsCheckingSession(true)
+      setProfile(initialProfile)
+      setHotel({
+        ...initialHotel,
+        country: authUser.phoneNumber?.startsWith('+1') ? 'United States' : 'India',
+      })
+      setHotelId('')
+
+      const loadOnboarding = async () => {
+        try {
+          const { profile: savedProfile, hotel: savedHotel } = await getOnboarding(authUser)
+          if (!active || auth.currentUser?.uid !== authUser.uid) return
+
+          if (savedProfile) {
+            setProfile({
+              fullName: savedProfile.fullName || '',
+              email: savedProfile.email || '',
+              role: savedProfile.role || 'Owner',
+            })
+          }
+
+          if (savedHotel) {
+            setHotel({
+              name: savedHotel.name || '',
+              propertyType: savedHotel.propertyType || 'Hotel',
+              address: savedHotel.address?.street || '',
+              city: savedHotel.address?.city || '',
+              region: savedHotel.address?.region || '',
+              postalCode: savedHotel.address?.postalCode || '',
+              country: savedHotel.address?.country || 'India',
+            })
+            setHotelId(savedHotel.id)
+            setStep('done')
+            return
+          }
+
+          setStep(savedProfile ? 'hotel' : 'profile')
+        } catch (loadError) {
+          if (!active || auth.currentUser?.uid !== authUser.uid) return
+          setError(getFirebaseErrorMessage(loadError, 'Could not load your saved setup.'))
+          setStep('profile')
+        } finally {
+          if (active && auth.currentUser?.uid === authUser.uid) {
+            setIsCheckingSession(false)
+          }
+        }
+      }
+
+      loadOnboarding()
     })
 
     return () => {
+      active = false
       unsubscribe()
       recaptchaVerifierRef.current?.clear()
     }
@@ -159,12 +245,113 @@ function App() {
       recaptchaVerifierRef.current?.clear()
       recaptchaVerifierRef.current = null
       setUser(credential.user)
-      setStep('complete')
+      setHotel((currentHotel) => ({
+        ...currentHotel,
+        country: countryCode === '+1' ? 'United States' : 'India',
+      }))
+      setStep('profile')
     } catch (firebaseError) {
       setError(getFirebaseErrorMessage(firebaseError, 'Could not verify the code.'))
     } finally {
       setIsVerifyingCode(false)
     }
+  }
+
+  const handleSaveProfile = async (event) => {
+    event.preventDefault()
+
+    if (!user) {
+      setError('Sign in again before saving your profile.')
+      return
+    }
+
+    const fullName = profile.fullName.trim()
+    const email = profile.email.trim()
+
+    if (fullName.length < 2) {
+      setError('Enter your full name.')
+      return
+    }
+
+    if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      setError('Enter a valid email address or leave it blank.')
+      return
+    }
+
+    setError('')
+    setIsSavingProfile(true)
+
+    try {
+      await saveProfile(user, {
+        fullName,
+        email,
+        role: profile.role,
+      })
+      setProfile((currentProfile) => ({ ...currentProfile, fullName, email }))
+      setStep('hotel')
+    } catch (saveError) {
+      setError(getFirebaseErrorMessage(saveError, 'Could not save your profile.'))
+    } finally {
+      setIsSavingProfile(false)
+    }
+  }
+
+  const handleSaveHotel = async (event) => {
+    event.preventDefault()
+
+    if (!user) {
+      setError('Sign in again before saving your hotel.')
+      return
+    }
+
+    const name = hotel.name.trim()
+    const street = hotel.address.trim()
+    const city = hotel.city.trim()
+
+    if (!name || !street || !city) {
+      setError('Enter the hotel name, street address, and city.')
+      return
+    }
+
+    setError('')
+    setIsSavingHotel(true)
+
+    try {
+      const savedHotel = await saveHotel(user, {
+        id: hotelId || undefined,
+        name,
+        propertyType: hotel.propertyType,
+        address: {
+          street,
+          city,
+          region: hotel.region.trim(),
+          postalCode: hotel.postalCode.trim(),
+          country: hotel.country,
+        },
+      })
+      setHotelId(savedHotel.id)
+      setStep('done')
+    } catch (saveError) {
+      setError(getFirebaseErrorMessage(saveError, 'Could not save your hotel details.'))
+    } finally {
+      setIsSavingHotel(false)
+    }
+  }
+
+  const updateProfile = (field) => (event) => {
+    setProfile((currentProfile) => ({
+      ...currentProfile,
+      [field]: event.target.value,
+    }))
+    setError('')
+  }
+
+  const updateHotel = (field) => (event) => {
+    setHotel((currentHotel) => ({
+      ...currentHotel,
+      [field]: event.target.value,
+    }))
+    setError('')
   }
 
   const changePhoneNumber = () => {
@@ -184,11 +371,21 @@ function App() {
       setPhone('')
       setOtp('')
       setNotice('')
+      setError('')
+      setProfile(initialProfile)
+      setHotel(initialHotel)
+      setHotelId('')
       setStep('phone')
     } catch (firebaseError) {
       setError(getFirebaseErrorMessage(firebaseError, 'Could not sign out.'))
     }
   }
+
+  const currentStepNumber = step === 'phone' || step === 'otp'
+    ? 1
+    : step === 'profile'
+      ? 2
+      : 3
 
   return (
     <main className="signup-shell container-fluid p-0">
@@ -232,45 +429,86 @@ function App() {
       <section className="form-panel col-12 col-lg-7" aria-label="Create your account">
         <div className="form-top">
           <span className="mobile-brand d-lg-none"><BrandMark /></span>
-          <a className="login-link" href="#login" onClick={(event) => event.preventDefault()}>
-            Already have an account? <span>Log in</span>
-          </a>
+          {user ? (
+            <button className="text-button header-signout" type="button" onClick={handleSignOut}>
+              Sign out
+            </button>
+          ) : (
+            <a className="login-link" href="#login" onClick={(event) => event.preventDefault()}>
+              Already have an account? <span>Log in</span>
+            </a>
+          )}
         </div>
 
         <div className="form-content">
           <div className="recaptcha-container" ref={recaptchaContainerRef} />
-          {step === 'complete' ? (
+          {isCheckingSession ? (
+            <div className="completion text-center" role="status" aria-live="polite">
+              <span className="spinner-border onboarding-spinner" aria-hidden="true" />
+              <p className="form-description mt-3">Loading your saved setup…</p>
+            </div>
+          ) : step === 'done' ? (
             <div className="completion">
               <div className="completion-icon" aria-hidden="true">✓</div>
-              <p className="form-eyebrow">PHONE VERIFIED</p>
-              <h2>Your account is ready.</h2>
+              <p className="form-eyebrow">SETUP COMPLETE</p>
+              <h2>Your hotel is ready.</h2>
               <p className="form-description">
-                Your admin account is now connected. You can add your hotel
-                details whenever you’re ready.
+                Your admin profile and hotel details have been saved securely.
               </p>
               <div className="alert alert-light success-notice" role="status">
-                <strong>Signed in</strong>
+                <strong>{hotel.name}</strong>
+                <span>{hotel.address}, {hotel.city}, {hotel.country}</span>
                 <span>{user?.phoneNumber}</span>
               </div>
               {error && <p className="form-error" role="alert">{error}</p>}
-              <button className="text-button" type="button" onClick={handleSignOut}>
-                Sign out
+              <button className="text-button" type="button" onClick={() => setStep('hotel')}>
+                Update hotel details
               </button>
             </div>
           ) : (
             <>
-              <div className="form-heading">
-                <div className="step-indicator" aria-label={`Step ${step === 'phone' ? '1' : '2'} of 2`}>
-                  <span className={step === 'phone' ? 'step-active' : 'step-done'} />
-                  <span className={step === 'otp' ? 'step-active' : ''} />
-                  <span>STEP {step === 'phone' ? '01' : '02'} <i>/ 02</i></span>
+              {step !== 'phone' && step !== 'otp' && user && (
+                <div className="signed-in-note">
+                  Signed in as <strong>{user.phoneNumber}</strong>
                 </div>
-                <p className="form-eyebrow">{step === 'phone' ? 'LET’S GET YOU STARTED' : 'ONE QUICK CHECK'}</p>
-                <h2>{step === 'phone' ? 'Your hotel starts here.' : 'Verify your number.'}</h2>
+              )}
+
+              <div className="form-heading">
+                <div className="step-indicator" aria-label={`Step ${currentStepNumber} of 3`}>
+                  {[1, 2, 3].map((number) => (
+                    <span
+                      key={number}
+                      className={number === currentStepNumber ? 'step-active' : number < currentStepNumber ? 'step-done' : ''}
+                    />
+                  ))}
+                  <span>STEP 0{currentStepNumber} <i>/ 03</i></span>
+                </div>
+                <p className="form-eyebrow">
+                  {step === 'phone'
+                    ? 'LET’S GET YOU STARTED'
+                    : step === 'otp'
+                      ? 'ONE QUICK CHECK'
+                      : step === 'profile'
+                        ? 'YOUR ADMIN PROFILE'
+                        : 'YOUR PROPERTY'}
+                </p>
+                <h2>
+                  {step === 'phone'
+                    ? 'Your hotel starts here.'
+                    : step === 'otp'
+                      ? 'Verify your number.'
+                      : step === 'profile'
+                        ? 'Tell us about yourself.'
+                        : 'Tell us about your hotel.'}
+                </h2>
                 <p className="form-description">
                   {step === 'phone'
                     ? 'Create your admin account with your phone. You can add your hotel details after.'
-                    : `Enter the 6-digit code we sent to ${countryCode} ${phone}.`}
+                    : step === 'otp'
+                      ? `Enter the 6-digit code we sent to ${countryCode} ${phone}.`
+                      : step === 'profile'
+                        ? 'Add your basic details so we can set up your hotel admin profile.'
+                        : 'Add the essentials now. You can complete the rest of your property setup later.'}
                 </p>
               </div>
 
@@ -322,7 +560,7 @@ function App() {
                     By continuing, you agree to our <a href="#terms" onClick={(event) => event.preventDefault()}>Terms</a> and <a href="#privacy" onClick={(event) => event.preventDefault()}>Privacy Policy</a>.
                   </p>
                 </form>
-              ) : (
+              ) : step === 'otp' ? (
                 <form className="signup-form d-flex flex-column" onSubmit={handleCreateAccount} noValidate>
                   <label className="form-label" htmlFor="otp">6-digit verification code</label>
                   <input
@@ -348,7 +586,7 @@ function App() {
                   )}
                   {notice && <p className="form-notice" role="status">{notice}</p>}
                   <button className="btn btn-primary primary-button" type="submit" disabled={isVerifyingCode}>
-                    {isVerifyingCode ? 'Verifying code…' : 'Create my account'}
+                    {isVerifyingCode ? 'Verifying code…' : 'Verify and continue'}
                     {!isVerifyingCode && <span aria-hidden="true">→</span>}
                   </button>
                   <p className="resend-prompt">
@@ -360,15 +598,164 @@ function App() {
                     ← Change phone number
                   </button>
                 </form>
+              ) : step === 'profile' ? (
+                <form className="signup-form d-flex flex-column" onSubmit={handleSaveProfile} noValidate>
+                  <div className="verified-phone">
+                    <span>VERIFIED PHONE</span>
+                    <strong>{user?.phoneNumber}</strong>
+                  </div>
+                  <label className="form-label" htmlFor="full-name">Your full name</label>
+                  <input
+                    className="form-control onboarding-control"
+                    id="full-name"
+                    type="text"
+                    autoComplete="name"
+                    placeholder="e.g. Alex Morgan"
+                    value={profile.fullName}
+                    onChange={updateProfile('fullName')}
+                    required
+                  />
+                  <label className="form-label onboarding-label" htmlFor="email">Email address <span>(optional)</span></label>
+                  <input
+                    className="form-control onboarding-control"
+                    id="email"
+                    type="email"
+                    autoComplete="email"
+                    placeholder="you@hotel.com"
+                    value={profile.email}
+                    onChange={updateProfile('email')}
+                  />
+                  <label className="form-label onboarding-label" htmlFor="role">Your role</label>
+                  <select
+                    className="form-select onboarding-control"
+                    id="role"
+                    value={profile.role}
+                    onChange={updateProfile('role')}
+                  >
+                    <option>Owner</option>
+                    <option>General manager</option>
+                    <option>Front desk manager</option>
+                    <option>Other</option>
+                  </select>
+                  {error && <p className="form-error" role="alert">{error}</p>}
+                  <button className="btn btn-primary primary-button" type="submit" disabled={isSavingProfile}>
+                    {isSavingProfile ? 'Saving profile…' : 'Save and continue'}
+                    {!isSavingProfile && <span aria-hidden="true">→</span>}
+                  </button>
+                </form>
+              ) : (
+                <form className="signup-form d-flex flex-column" onSubmit={handleSaveHotel} noValidate>
+                  <div className="row g-2">
+                    <div className="col-12">
+                      <label className="form-label" htmlFor="hotel-name">Hotel or property name</label>
+                      <input
+                        className="form-control onboarding-control"
+                        id="hotel-name"
+                        type="text"
+                        autoComplete="organization"
+                        placeholder="e.g. The Garden House"
+                        value={hotel.name}
+                        onChange={updateHotel('name')}
+                        required
+                      />
+                    </div>
+                    <div className="col-12">
+                      <label className="form-label onboarding-label" htmlFor="property-type">Property type</label>
+                      <select
+                        className="form-select onboarding-control"
+                        id="property-type"
+                        value={hotel.propertyType}
+                        onChange={updateHotel('propertyType')}
+                      >
+                        <option>Hotel</option>
+                        <option>Resort</option>
+                        <option>Guesthouse</option>
+                        <option>Other</option>
+                      </select>
+                    </div>
+                    <div className="col-12">
+                      <label className="form-label onboarding-label" htmlFor="hotel-address">Street address</label>
+                      <input
+                        className="form-control onboarding-control"
+                        id="hotel-address"
+                        type="text"
+                        autoComplete="street-address"
+                        placeholder="Building, street, and area"
+                        value={hotel.address}
+                        onChange={updateHotel('address')}
+                        required
+                      />
+                    </div>
+                    <div className="col-12 col-sm-6">
+                      <label className="form-label onboarding-label" htmlFor="hotel-city">City</label>
+                      <input
+                        className="form-control onboarding-control"
+                        id="hotel-city"
+                        type="text"
+                        autoComplete="address-level2"
+                        value={hotel.city}
+                        onChange={updateHotel('city')}
+                        required
+                      />
+                    </div>
+                    <div className="col-12 col-sm-6">
+                      <label className="form-label onboarding-label" htmlFor="hotel-region">State / region</label>
+                      <input
+                        className="form-control onboarding-control"
+                        id="hotel-region"
+                        type="text"
+                        autoComplete="address-level1"
+                        value={hotel.region}
+                        onChange={updateHotel('region')}
+                      />
+                    </div>
+                    <div className="col-12 col-sm-6">
+                      <label className="form-label onboarding-label" htmlFor="hotel-postal-code">Postal code</label>
+                      <input
+                        className="form-control onboarding-control"
+                        id="hotel-postal-code"
+                        type="text"
+                        autoComplete="postal-code"
+                        value={hotel.postalCode}
+                        onChange={updateHotel('postalCode')}
+                      />
+                    </div>
+                    <div className="col-12 col-sm-6">
+                      <label className="form-label onboarding-label" htmlFor="hotel-country">Country</label>
+                      <select
+                        className="form-select onboarding-control"
+                        id="hotel-country"
+                        autoComplete="country-name"
+                        value={hotel.country}
+                        onChange={updateHotel('country')}
+                      >
+                        <option>India</option>
+                        <option>United States</option>
+                      </select>
+                    </div>
+                  </div>
+                  {error && <p className="form-error" role="alert">{error}</p>}
+                  <div className="wizard-actions">
+                    <button className="text-button" type="button" onClick={() => setStep('profile')}>
+                      ← Back
+                    </button>
+                    <button className="btn btn-primary primary-button" type="submit" disabled={isSavingHotel}>
+                      {isSavingHotel ? 'Saving hotel…' : 'Save hotel'}
+                      {!isSavingHotel && <span aria-hidden="true">✓</span>}
+                    </button>
+                  </div>
+                </form>
               )}
 
-              <div className="secure-note">
-                <svg viewBox="0 0 20 20" fill="none" aria-hidden="true">
-                  <path d="M10 2.5 3.75 5v4.17c0 3.77 2.67 7.3 6.25 8.33 3.58-1.03 6.25-4.56 6.25-8.33V5L10 2.5Z" />
-                  <path d="m7.5 10 1.67 1.67L12.92 8" />
-                </svg>
-                <span>Your number stays private and secure.</span>
-              </div>
+              {(step === 'phone' || step === 'otp') && (
+                <div className="secure-note">
+                  <svg viewBox="0 0 20 20" fill="none" aria-hidden="true">
+                    <path d="M10 2.5 3.75 5v4.17c0 3.77 2.67 7.3 6.25 8.33 3.58-1.03 6.25-4.56 6.25-8.33V5L10 2.5Z" />
+                    <path d="m7.5 10 1.67 1.67L12.92 8" />
+                  </svg>
+                  <span>Your number stays private and secure.</span>
+                </div>
+              )}
             </>
           )}
         </div>

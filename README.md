@@ -22,7 +22,7 @@ Start the web client in another:
 npm --prefix frontend run dev
 ```
 
-The API listens on port `3000` by default; set `PORT` to override it. Hotel workflows and hotel-data persistence are not implemented yet.
+The API listens on port `3000` by default; set `PORT` to override it.
 
 ## Firebase phone authentication
 
@@ -30,6 +30,29 @@ The frontend reads its Firebase web-app configuration from `frontend/.env.local`
 Copy `frontend/.env.example` to that file and fill in the values from Firebase
 Console. In Firebase Console, enable **Phone** as a sign-in provider and add
 your deployment domain under Authentication's authorized domains.
+
+## Local PostgreSQL onboarding
+
+Firebase is used only for phone authentication. Admin and hotel onboarding
+records are stored in the local PostgreSQL database through the Express API;
+the frontend does not use Firestore.
+
+1. Install PostgreSQL and create a local database, for example:
+   `psql -U postgres -h 127.0.0.1 -c "CREATE DATABASE hotel_management;"`.
+2. Copy `backend/.env.example` to `backend/.env`, then set `DATABASE_URL` to
+   your local PostgreSQL credentials and `FIREBASE_PROJECT_ID` to the project
+   used by the frontend Firebase phone-auth configuration. URL-encode special
+   characters in the database password.
+3. Configure `frontend/.env.local` as described above.
+4. Start the API with `npm --prefix backend start`. On startup it creates the
+   required `admin_users` and `hotels` tables if they do not exist. The API
+   verifies Firebase ID tokens before accessing user-owned records.
+5. Start the frontend with `npm --prefix frontend run dev`. Vite proxies `/api`
+   requests to the local API at `http://127.0.0.1:3000`.
+
+The admin profile and its primary hotel are saved in PostgreSQL, with hotel
+creation/update and the primary-hotel link committed in one database
+transaction. Never commit `backend/.env` or `frontend/.env.local`.
 
 ## Feature workflow
 
