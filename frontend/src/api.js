@@ -29,6 +29,15 @@ async function requestApi(user, path, options = {}) {
     throw error
   }
 
+  if (response.status === 502 || response.status === 504) {
+    throw new ApiError('The local API is offline. Start it with npm --prefix backend start.')
+  }
+
+  const contentType = response.headers.get('content-type') || ''
+  if (!contentType.includes('application/json')) {
+    throw new ApiError(`The local API returned an unexpected response (${response.status}).`)
+  }
+
   let data
   try {
     data = await response.json()

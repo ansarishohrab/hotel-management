@@ -241,6 +241,18 @@
   text-decoration: none;
 }
 
+.mode-switch {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  font: inherit;
+}
+
+.mode-switch:hover span {
+  color: #204e42;
+}
+
 .login-link span,
 .signup-form a,
 .resend-prompt button,
@@ -563,7 +575,8 @@
 
 .primary-button:focus-visible,
 .text-button:focus-visible,
-.resend-prompt button:focus-visible {
+.resend-prompt button:focus-visible,
+.mode-switch:focus-visible {
   outline: 3px solid rgb(40 93 79 / 25%);
   outline-offset: 3px;
 }

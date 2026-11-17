@@ -85,6 +85,7 @@ function App() {
   const [countryCode, setCountryCode] = useState('+91')
   const [phone, setPhone] = useState('')
   const [otp, setOtp] = useState('')
+  const [authMode, setAuthMode] = useState('signup')
   const [step, setStep] = useState('phone')
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
@@ -100,6 +101,8 @@ function App() {
   const recaptchaContainerRef = useRef(null)
   const recaptchaVerifierRef = useRef(null)
   const confirmationResultRef = useRef(null)
+  const authModeRef = useRef('signup')
+  const pendingAuthNoticeRef = useRef('')
 
   useEffect(() => {
     let active = true
@@ -107,9 +110,11 @@ function App() {
       if (!active) return
 
       setUser(authUser)
-      setError('')
 
       if (!authUser) {
+        const pendingNotice = pendingAuthNoticeRef.current
+        pendingAuthNoticeRef.current = ''
+        setError(pendingNotice)
         confirmationResultRef.current = null
         setProfile(initialProfile)
         setHotel(initialHotel)
@@ -119,6 +124,7 @@ function App() {
         return
       }
 
+      setError('')
       setIsCheckingSession(true)
       setProfile(initialProfile)
       setHotel({
@@ -131,6 +137,12 @@ function App() {
         try {
           const { profile: savedProfile, hotel: savedHotel } = await getOnboarding(authUser)
           if (!active || auth.currentUser?.uid !== authUser.uid) return
+
+          if (!savedProfile && authModeRef.current === 'login') {
+            pendingAuthNoticeRef.current = 'No admin account was found for this phone number. Sign out and choose Create account to register.'
+            await signOut(auth)
+            return
+          }
 
           if (savedProfile) {
             setProfile({
@@ -158,8 +170,22 @@ function App() {
           setStep(savedProfile ? 'hotel' : 'profile')
         } catch (loadError) {
           if (!active || auth.currentUser?.uid !== authUser.uid) return
-          setError(getFirebaseErrorMessage(loadError, 'Could not load your saved setup.'))
-          setStep('profile')
+          const message = getFirebaseErrorMessage(loadError, 'Could not load your saved setup.')
+
+          if (authModeRef.current === 'login') {
+            pendingAuthNoticeRef.current = message
+            try {
+              await signOut(auth)
+            } catch (signOutError) {
+              pendingAuthNoticeRef.current = ''
+              setError(`${message} ${getFirebaseErrorMessage(signOutError, 'Could not sign out.')}`)
+              setStep('phone')
+              setIsCheckingSession(false)
+            }
+          } else {
+            setError(message)
+            setStep('profile')
+          }
         } finally {
           if (active && auth.currentUser?.uid === authUser.uid) {
             setIsCheckingSession(false)
@@ -249,7 +275,7 @@ function App() {
         ...currentHotel,
         country: countryCode === '+1' ? 'United States' : 'India',
       }))
-      setStep('profile')
+      if (authModeRef.current === 'signup') setStep('profile')
     } catch (firebaseError) {
       setError(getFirebaseErrorMessage(firebaseError, 'Could not verify the code.'))
     } finally {
@@ -354,6 +380,18 @@ function App() {
     setError('')
   }
 
+  const switchAuthMode = (nextMode) => {
+    authModeRef.current = nextMode
+    setAuthMode(nextMode)
+    confirmationResultRef.current = null
+    recaptchaVerifierRef.current?.clear()
+    recaptchaVerifierRef.current = null
+    setOtp('')
+    setError('')
+    setNotice('')
+    setStep('phone')
+  }
+
   const changePhoneNumber = () => {
     confirmationResultRef.current = null
     setStep('phone')
@@ -426,7 +464,7 @@ function App() {
         <div className="story-decoration story-decoration-two" aria-hidden="true" />
       </section>
 
-      <section className="form-panel col-12 col-lg-7" aria-label="Create your account">
+      <section className="form-panel col-12 col-lg-7" aria-label="Sign in or create your account">
         <div className="form-top">
           <span className="mobile-brand d-lg-none"><BrandMark /></span>
           {user ? (
@@ -434,9 +472,15 @@ function App() {
               Sign out
             </button>
           ) : (
-            <a className="login-link" href="#login" onClick={(event) => event.preventDefault()}>
-              Already have an account? <span>Log in</span>
-            </a>
+            <button
+              className="login-link mode-switch"
+              type="button"
+              onClick={() => switchAuthMode(authMode === 'signup' ? 'login' : 'signup')}
+            >
+              {authMode === 'signup'
+                ? <>Already have an account? <span>Log in</span></>
+                : <>New to Haven? <span>Create account</span></>}
+            </button>
           )}
         </div>
 
@@ -485,7 +529,7 @@ function App() {
                 </div>
                 <p className="form-eyebrow">
                   {step === 'phone'
-                    ? 'LET’S GET YOU STARTED'
+                    ? authMode === 'signup' ? 'LET’S GET YOU STARTED' : 'WELCOME BACK'
                     : step === 'otp'
                       ? 'ONE QUICK CHECK'
                       : step === 'profile'
@@ -494,7 +538,7 @@ function App() {
                 </p>
                 <h2>
                   {step === 'phone'
-                    ? 'Your hotel starts here.'
+                    ? authMode === 'signup' ? 'Your hotel starts here.' : 'Welcome back.'
                     : step === 'otp'
                       ? 'Verify your number.'
                       : step === 'profile'
@@ -503,7 +547,9 @@ function App() {
                 </h2>
                 <p className="form-description">
                   {step === 'phone'
-                    ? 'Create your admin account with your phone. You can add your hotel details after.'
+                    ? authMode === 'signup'
+                      ? 'Create your admin account with your phone. You can add your hotel details after.'
+                      : 'Sign in securely with the phone number on your admin account.'
                     : step === 'otp'
                       ? `Enter the 6-digit code we sent to ${countryCode} ${phone}.`
                       : step === 'profile'
@@ -550,15 +596,21 @@ function App() {
                   {error ? (
                     <p className="form-error" id="form-error" role="alert">{error}</p>
                   ) : (
-                    <p className="field-hint" id="phone-hint">We’ll send a one-time code to verify it’s you.</p>
+                    <p className="field-hint" id="phone-hint">
+                      {authMode === 'signup'
+                        ? 'We’ll send a one-time code to verify it’s you.'
+                        : 'We’ll text a one-time sign-in code to your phone.'}
+                    </p>
                   )}
                   <button className="btn btn-primary primary-button" type="submit" disabled={isSendingCode}>
-                    {isSendingCode ? 'Sending code…' : 'Continue with phone'}
+                    {isSendingCode ? 'Sending code…' : authMode === 'signup' ? 'Continue with phone' : 'Send sign-in code'}
                     {!isSendingCode && <span aria-hidden="true">→</span>}
                   </button>
-                  <p className="terms text-center">
-                    By continuing, you agree to our <a href="#terms" onClick={(event) => event.preventDefault()}>Terms</a> and <a href="#privacy" onClick={(event) => event.preventDefault()}>Privacy Policy</a>.
-                  </p>
+                  {authMode === 'signup' && (
+                    <p className="terms text-center">
+                      By continuing, you agree to our <a href="#terms" onClick={(event) => event.preventDefault()}>Terms</a> and <a href="#privacy" onClick={(event) => event.preventDefault()}>Privacy Policy</a>.
+                    </p>
+                  )}
                 </form>
               ) : step === 'otp' ? (
                 <form className="signup-form d-flex flex-column" onSubmit={handleCreateAccount} noValidate>
@@ -586,7 +638,11 @@ function App() {
                   )}
                   {notice && <p className="form-notice" role="status">{notice}</p>}
                   <button className="btn btn-primary primary-button" type="submit" disabled={isVerifyingCode}>
-                    {isVerifyingCode ? 'Verifying code…' : 'Verify and continue'}
+                    {isVerifyingCode
+                      ? 'Verifying code…'
+                      : authMode === 'signup'
+                        ? 'Verify and continue'
+                        : 'Sign in'}
                     {!isVerifyingCode && <span aria-hidden="true">→</span>}
                   </button>
                   <p className="resend-prompt">
