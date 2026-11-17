@@ -22,7 +22,14 @@ Start the web client in another:
 npm --prefix frontend run dev
 ```
 
-The API listens on port `3000` by default; set `PORT` to override it. Persistence, authentication, and hotel workflows are not implemented yet.
+The API listens on port `3000` by default; set `PORT` to override it. Hotel workflows and hotel-data persistence are not implemented yet.
+
+## Firebase phone authentication
+
+The frontend reads its Firebase web-app configuration from `frontend/.env.local`.
+Copy `frontend/.env.example` to that file and fill in the values from Firebase
+Console. In Firebase Console, enable **Phone** as a sign-in provider and add
+your deployment domain under Authentication's authorized domains.
 
 ## Feature workflow
 
