@@ -1,18 +1,14 @@
 import { useEffect, useRef, useState } from 'react'
 import {
+  createUserWithEmailAndPassword,
   onAuthStateChanged,
-  RecaptchaVerifier,
-  signInWithPhoneNumber,
+  sendPasswordResetEmail,
+  signInWithEmailAndPassword,
   signOut,
 } from '@firebase/auth'
 import { auth } from './firebase'
 import { ApiError, getOnboarding, saveHotel, saveProfile } from './api'
 import './App.css'
-
-const countryOptions = [
-  { callingCode: '+91', name: 'India' },
-  { callingCode: '+1', name: 'United States' },
-]
 
 const initialProfile = {
   fullName: '',
@@ -31,15 +27,16 @@ const initialHotel = {
 }
 
 const firebaseErrorMessages = {
-  'auth/invalid-phone-number': 'Enter a valid phone number.',
-  'auth/invalid-verification-code': 'That code is incorrect. Check it and try again.',
-  'auth/code-expired': 'That code has expired. Request a new one.',
+  'auth/email-already-in-use': 'An account already exists for this email. Try signing in instead.',
+  'auth/invalid-email': 'Enter a valid email address.',
+  'auth/weak-password': 'Choose a password with at least 6 characters.',
+  'auth/invalid-credential': 'Email or password is incorrect.',
+  'auth/invalid-login-credentials': 'Email or password is incorrect.',
+  'auth/user-not-found': 'Email or password is incorrect.',
+  'auth/wrong-password': 'Email or password is incorrect.',
+  'auth/user-disabled': 'This account has been disabled.',
   'auth/too-many-requests': 'Too many attempts. Please wait before trying again.',
-  'auth/quota-exceeded': 'SMS verification is temporarily unavailable. Please try again later.',
-  'auth/captcha-check-failed': 'The security check failed. Please try again.',
-  'auth/invalid-app-credential': 'The security check expired. Please request a new code.',
-  'auth/operation-not-allowed': 'Phone sign-in is not enabled for this Firebase project.',
-  'auth/app-not-authorized': 'This domain is not authorized for Firebase phone sign-in.',
+  'auth/operation-not-allowed': 'Email and password sign-in is not enabled for this Firebase project.',
   'auth/network-request-failed': 'Check your internet connection and try again.',
 }
 
@@ -82,25 +79,22 @@ function BrandMark() {
 }
 
 function App() {
-  const [countryCode, setCountryCode] = useState('+91')
-  const [phone, setPhone] = useState('')
-  const [otp, setOtp] = useState('')
+  const [authEmail, setAuthEmail] = useState('')
+  const [authPassword, setAuthPassword] = useState('')
+  const [confirmPassword, setConfirmPassword] = useState('')
   const [authMode, setAuthMode] = useState('signup')
-  const [step, setStep] = useState('phone')
+  const [step, setStep] = useState('auth')
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
   const [user, setUser] = useState(null)
-  const [isSendingCode, setIsSendingCode] = useState(false)
-  const [isVerifyingCode, setIsVerifyingCode] = useState(false)
+  const [isSubmittingAuth, setIsSubmittingAuth] = useState(false)
+  const [isSendingPasswordReset, setIsSendingPasswordReset] = useState(false)
   const [isCheckingSession, setIsCheckingSession] = useState(true)
   const [isSavingProfile, setIsSavingProfile] = useState(false)
   const [isSavingHotel, setIsSavingHotel] = useState(false)
   const [profile, setProfile] = useState(initialProfile)
   const [hotel, setHotel] = useState(initialHotel)
   const [hotelId, setHotelId] = useState('')
-  const recaptchaContainerRef = useRef(null)
-  const recaptchaVerifierRef = useRef(null)
-  const confirmationResultRef = useRef(null)
   const authModeRef = useRef('signup')
   const pendingAuthNoticeRef = useRef('')
 
@@ -115,22 +109,18 @@ function App() {
         const pendingNotice = pendingAuthNoticeRef.current
         pendingAuthNoticeRef.current = ''
         setError(pendingNotice)
-        confirmationResultRef.current = null
         setProfile(initialProfile)
         setHotel(initialHotel)
         setHotelId('')
-        setStep('phone')
+        setStep('auth')
         setIsCheckingSession(false)
         return
       }
 
       setError('')
       setIsCheckingSession(true)
-      setProfile(initialProfile)
-      setHotel({
-        ...initialHotel,
-        country: authUser.phoneNumber?.startsWith('+1') ? 'United States' : 'India',
-      })
+      setProfile({ ...initialProfile, email: authUser.email || '' })
+      setHotel(initialHotel)
       setHotelId('')
 
       const loadOnboarding = async () => {
@@ -139,7 +129,7 @@ function App() {
           if (!active || auth.currentUser?.uid !== authUser.uid) return
 
           if (!savedProfile && authModeRef.current === 'login') {
-            pendingAuthNoticeRef.current = 'No admin account was found for this phone number. Sign out and choose Create account to register.'
+            pendingAuthNoticeRef.current = 'No admin account was found for this email. Sign out and choose Create account to register.'
             await signOut(auth)
             return
           }
@@ -147,7 +137,7 @@ function App() {
           if (savedProfile) {
             setProfile({
               fullName: savedProfile.fullName || '',
-              email: savedProfile.email || '',
+              email: savedProfile.email || authUser.email || '',
               role: savedProfile.role || 'Owner',
             })
           }
@@ -179,7 +169,7 @@ function App() {
             } catch (signOutError) {
               pendingAuthNoticeRef.current = ''
               setError(`${message} ${getFirebaseErrorMessage(signOutError, 'Could not sign out.')}`)
-              setStep('phone')
+              setStep('auth')
               setIsCheckingSession(false)
             }
           } else {
@@ -199,87 +189,68 @@ function App() {
     return () => {
       active = false
       unsubscribe()
-      recaptchaVerifierRef.current?.clear()
     }
   }, [])
 
-  const sendVerificationCode = async () => {
-    if (isSendingCode) return
+  const handleAuthSubmit = async (event) => {
+    event.preventDefault()
+    const email = authEmail.trim().toLowerCase()
 
-    const digits = phone.replace(/\D/g, '')
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      setError('Enter a valid email address.')
+      return
+    }
 
-    if (digits.length !== 10) {
-      setError('Enter a valid 10-digit phone number.')
+    if (authPassword.length < 6) {
+      setError('Enter a password with at least 6 characters.')
+      return
+    }
+
+    if (authMode === 'signup' && authPassword !== confirmPassword) {
+      setError('Your passwords do not match.')
       return
     }
 
     setError('')
     setNotice('')
-    setIsSendingCode(true)
+    setIsSubmittingAuth(true)
 
     try {
-      recaptchaVerifierRef.current?.clear()
-      const verifier = new RecaptchaVerifier(auth, recaptchaContainerRef.current, {
-        size: 'invisible',
-      })
-      recaptchaVerifierRef.current = verifier
+      const credential = authMode === 'signup'
+        ? await createUserWithEmailAndPassword(auth, email, authPassword)
+        : await signInWithEmailAndPassword(auth, email, authPassword)
 
-      const confirmation = await signInWithPhoneNumber(
-        auth,
-        `${countryCode}${digits}`,
-        verifier,
-      )
-
-      confirmationResultRef.current = confirmation
-      setOtp('')
-      setStep('otp')
-      if (step === 'otp') setNotice('A new verification code was sent.')
+      setUser(credential.user)
+      setAuthEmail(credential.user.email || email)
+      setAuthPassword('')
+      setConfirmPassword('')
+      if (authMode === 'signup') setStep('profile')
     } catch (firebaseError) {
-      recaptchaVerifierRef.current?.clear()
-      recaptchaVerifierRef.current = null
-      setError(getFirebaseErrorMessage(firebaseError, 'Could not send the verification code.'))
+      setError(getFirebaseErrorMessage(firebaseError, 'Could not authenticate your account.'))
     } finally {
-      setIsSendingCode(false)
+      setIsSubmittingAuth(false)
     }
   }
 
-  const handleSendCode = (event) => {
-    event.preventDefault()
-    return sendVerificationCode()
-  }
+  const handlePasswordReset = async () => {
+    const email = authEmail.trim().toLowerCase()
 
-  const handleCreateAccount = async (event) => {
-    event.preventDefault()
-
-    if (otp.length !== 6) {
-      setError('Enter the 6-digit code to continue.')
-      return
-    }
-
-    if (!confirmationResultRef.current) {
-      setError('Request a new verification code before continuing.')
-      setStep('phone')
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      setError('Enter your account email address first.')
       return
     }
 
     setError('')
-    setIsVerifyingCode(true)
+    setNotice('')
+    setIsSendingPasswordReset(true)
 
     try {
-      const credential = await confirmationResultRef.current.confirm(otp)
-      confirmationResultRef.current = null
-      recaptchaVerifierRef.current?.clear()
-      recaptchaVerifierRef.current = null
-      setUser(credential.user)
-      setHotel((currentHotel) => ({
-        ...currentHotel,
-        country: countryCode === '+1' ? 'United States' : 'India',
-      }))
-      if (authModeRef.current === 'signup') setStep('profile')
+      await sendPasswordResetEmail(auth, email)
+      setNotice('If an account exists for that email, a password reset link has been sent.')
     } catch (firebaseError) {
-      setError(getFirebaseErrorMessage(firebaseError, 'Could not verify the code.'))
+      setError(getFirebaseErrorMessage(firebaseError, 'Could not send a password reset email.'))
     } finally {
-      setIsVerifyingCode(false)
+      setIsSendingPasswordReset(false)
     }
   }
 
@@ -292,15 +263,15 @@ function App() {
     }
 
     const fullName = profile.fullName.trim()
-    const email = profile.email.trim()
+    const email = user.email || ''
 
     if (fullName.length < 2) {
       setError('Enter your full name.')
       return
     }
 
-    if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-      setError('Enter a valid email address or leave it blank.')
+    if (!email) {
+      setError('Your Firebase account must have an email address.')
       return
     }
 
@@ -310,7 +281,6 @@ function App() {
     try {
       await saveProfile(user, {
         fullName,
-        email,
         role: profile.role,
       })
       setProfile((currentProfile) => ({ ...currentProfile, fullName, email }))
@@ -383,21 +353,11 @@ function App() {
   const switchAuthMode = (nextMode) => {
     authModeRef.current = nextMode
     setAuthMode(nextMode)
-    confirmationResultRef.current = null
-    recaptchaVerifierRef.current?.clear()
-    recaptchaVerifierRef.current = null
-    setOtp('')
+    setAuthPassword('')
+    setConfirmPassword('')
     setError('')
     setNotice('')
-    setStep('phone')
-  }
-
-  const changePhoneNumber = () => {
-    confirmationResultRef.current = null
-    setStep('phone')
-    setOtp('')
-    setError('')
-    setNotice('')
+    setStep('auth')
   }
 
   const handleSignOut = async () => {
@@ -405,25 +365,20 @@ function App() {
 
     try {
       await signOut(auth)
-      confirmationResultRef.current = null
-      setPhone('')
-      setOtp('')
+      setAuthPassword('')
+      setConfirmPassword('')
       setNotice('')
       setError('')
       setProfile(initialProfile)
       setHotel(initialHotel)
       setHotelId('')
-      setStep('phone')
+      setStep('auth')
     } catch (firebaseError) {
       setError(getFirebaseErrorMessage(firebaseError, 'Could not sign out.'))
     }
   }
 
-  const currentStepNumber = step === 'phone' || step === 'otp'
-    ? 1
-    : step === 'profile'
-      ? 2
-      : 3
+  const currentStepNumber = step === 'auth' ? 1 : step === 'profile' ? 2 : 3
 
   return (
     <main className="signup-shell container-fluid p-0">
@@ -485,7 +440,6 @@ function App() {
         </div>
 
         <div className="form-content">
-          <div className="recaptcha-container" ref={recaptchaContainerRef} />
           {isCheckingSession ? (
             <div className="completion text-center" role="status" aria-live="polite">
               <span className="spinner-border onboarding-spinner" aria-hidden="true" />
@@ -502,7 +456,7 @@ function App() {
               <div className="alert alert-light success-notice" role="status">
                 <strong>{hotel.name}</strong>
                 <span>{hotel.address}, {hotel.city}, {hotel.country}</span>
-                <span>{user?.phoneNumber}</span>
+                <span>{user?.email}</span>
               </div>
               {error && <p className="form-error" role="alert">{error}</p>}
               <button className="text-button" type="button" onClick={() => setStep('hotel')}>
@@ -511,9 +465,9 @@ function App() {
             </div>
           ) : (
             <>
-              {step !== 'phone' && step !== 'otp' && user && (
+              {step !== 'auth' && user && (
                 <div className="signed-in-note">
-                  Signed in as <strong>{user.phoneNumber}</strong>
+                  Signed in as <strong>{user.email}</strong>
                 </div>
               )}
 
@@ -528,83 +482,98 @@ function App() {
                   <span>STEP 0{currentStepNumber} <i>/ 03</i></span>
                 </div>
                 <p className="form-eyebrow">
-                  {step === 'phone'
+                  {step === 'auth'
                     ? authMode === 'signup' ? 'LET’S GET YOU STARTED' : 'WELCOME BACK'
-                    : step === 'otp'
-                      ? 'ONE QUICK CHECK'
-                      : step === 'profile'
-                        ? 'YOUR ADMIN PROFILE'
-                        : 'YOUR PROPERTY'}
+                    : step === 'profile' ? 'YOUR ADMIN PROFILE' : 'YOUR PROPERTY'}
                 </p>
                 <h2>
-                  {step === 'phone'
+                  {step === 'auth'
                     ? authMode === 'signup' ? 'Your hotel starts here.' : 'Welcome back.'
-                    : step === 'otp'
-                      ? 'Verify your number.'
-                      : step === 'profile'
-                        ? 'Tell us about yourself.'
-                        : 'Tell us about your hotel.'}
+                    : step === 'profile'
+                      ? 'Tell us about yourself.'
+                      : 'Tell us about your hotel.'}
                 </h2>
                 <p className="form-description">
-                  {step === 'phone'
+                  {step === 'auth'
                     ? authMode === 'signup'
-                      ? 'Create your admin account with your phone. You can add your hotel details after.'
-                      : 'Sign in securely with the phone number on your admin account.'
-                    : step === 'otp'
-                      ? `Enter the 6-digit code we sent to ${countryCode} ${phone}.`
-                      : step === 'profile'
-                        ? 'Add your basic details so we can set up your hotel admin profile.'
-                        : 'Add the essentials now. You can complete the rest of your property setup later.'}
+                      ? 'Create your admin account with your email and password. Add your hotel details next.'
+                      : 'Sign in securely with the email and password on your admin account.'
+                    : step === 'profile'
+                      ? 'Add your basic details so we can set up your hotel admin profile.'
+                      : 'Add the essentials now. You can complete the rest of your property setup later.'}
                 </p>
               </div>
 
-              {step === 'phone' ? (
-                <form className="signup-form d-flex flex-column" onSubmit={handleSendCode} noValidate>
-                  <label className="form-label" htmlFor="phone">Phone number</label>
-                  <div className={`input-group phone-field${error ? ' field-error' : ''}`}>
-                    <select
-                      className="form-select form-select-sm country-select"
-                      id="country-code"
-                      value={countryCode}
-                      aria-label="Country calling code"
-                      onChange={(event) => setCountryCode(event.target.value)}
-                    >
-                      {countryOptions.map((option) => (
-                        <option key={option.callingCode} value={option.callingCode}>
-                          {option.name} ({option.callingCode})
-                        </option>
-                      ))}
-                    </select>
-                    <span className="field-divider" />
-                    <input
-                      className="form-control"
-                      id="phone"
-                      type="tel"
-                      autoComplete="tel-national"
-                      inputMode="tel"
-                      maxLength={10}
-                      placeholder="00000 00000"
-                      value={phone}
-                      onChange={(event) => {
-                        setPhone(event.target.value)
-                        setError('')
-                      }}
-                      aria-invalid={Boolean(error)}
-                      aria-describedby={error ? 'form-error' : 'phone-hint'}
-                    />
-                  </div>
-                  {error ? (
-                    <p className="form-error" id="form-error" role="alert">{error}</p>
+              {step === 'auth' ? (
+                <form className="signup-form d-flex flex-column" onSubmit={handleAuthSubmit} noValidate>
+                  <label className="form-label" htmlFor="auth-email">Email address</label>
+                  <input
+                    className={`form-control onboarding-control${error ? ' field-error' : ''}`}
+                    id="auth-email"
+                    type="email"
+                    autoComplete="email"
+                    placeholder="you@hotel.com"
+                    value={authEmail}
+                    onChange={(event) => {
+                      setAuthEmail(event.target.value)
+                      setError('')
+                      setNotice('')
+                    }}
+                    aria-invalid={Boolean(error)}
+                    required
+                  />
+                  <label className="form-label onboarding-label" htmlFor="auth-password">Password</label>
+                  <input
+                    className={`form-control onboarding-control${error ? ' field-error' : ''}`}
+                    id="auth-password"
+                    type="password"
+                    autoComplete={authMode === 'signup' ? 'new-password' : 'current-password'}
+                    placeholder={authMode === 'signup' ? 'At least 6 characters' : 'Your password'}
+                    value={authPassword}
+                    onChange={(event) => {
+                      setAuthPassword(event.target.value)
+                      setError('')
+                    }}
+                    aria-invalid={Boolean(error)}
+                    required
+                  />
+                  {authMode === 'signup' ? (
+                    <>
+                      <label className="form-label onboarding-label" htmlFor="confirm-password">Confirm password</label>
+                      <input
+                        className={`form-control onboarding-control${error ? ' field-error' : ''}`}
+                        id="confirm-password"
+                        type="password"
+                        autoComplete="new-password"
+                        placeholder="Re-enter your password"
+                        value={confirmPassword}
+                        onChange={(event) => {
+                          setConfirmPassword(event.target.value)
+                          setError('')
+                        }}
+                        aria-invalid={Boolean(error)}
+                        required
+                      />
+                    </>
                   ) : (
-                    <p className="field-hint" id="phone-hint">
-                      {authMode === 'signup'
-                        ? 'We’ll send a one-time code to verify it’s you.'
-                        : 'We’ll text a one-time sign-in code to your phone.'}
-                    </p>
+                    <button
+                      className="text-button password-reset"
+                      type="button"
+                      onClick={handlePasswordReset}
+                      disabled={isSendingPasswordReset}
+                    >
+                      {isSendingPasswordReset ? 'Sending reset email…' : 'Forgot password?'}
+                    </button>
                   )}
-                  <button className="btn btn-primary primary-button" type="submit" disabled={isSendingCode}>
-                    {isSendingCode ? 'Sending code…' : authMode === 'signup' ? 'Continue with phone' : 'Send sign-in code'}
-                    {!isSendingCode && <span aria-hidden="true">→</span>}
+                  {error && <p className="form-error" id="form-error" role="alert">{error}</p>}
+                  {notice && <p className="form-notice" role="status">{notice}</p>}
+                  <button className="btn btn-primary primary-button" type="submit" disabled={isSubmittingAuth}>
+                    {isSubmittingAuth
+                      ? 'Please wait…'
+                      : authMode === 'signup'
+                        ? 'Create account'
+                        : 'Sign in'}
+                    {!isSubmittingAuth && <span aria-hidden="true">→</span>}
                   </button>
                   {authMode === 'signup' && (
                     <p className="terms text-center">
@@ -612,53 +581,11 @@ function App() {
                     </p>
                   )}
                 </form>
-              ) : step === 'otp' ? (
-                <form className="signup-form d-flex flex-column" onSubmit={handleCreateAccount} noValidate>
-                  <label className="form-label" htmlFor="otp">6-digit verification code</label>
-                  <input
-                    className={`form-control otp-field${error ? ' field-error' : ''}`}
-                    id="otp"
-                    type="text"
-                    inputMode="numeric"
-                    autoComplete="one-time-code"
-                    maxLength={6}
-                    placeholder="· · · · · ·"
-                    value={otp}
-                    onChange={(event) => {
-                      setOtp(event.target.value.replace(/\D/g, '').slice(0, 6))
-                      setError('')
-                    }}
-                    aria-invalid={Boolean(error)}
-                    aria-describedby={error ? 'form-error' : undefined}
-                  />
-                  {error ? (
-                    <p className="form-error" id="form-error" role="alert">{error}</p>
-                  ) : (
-                    <p className="field-hint">Enter the 6-digit code sent to your phone.</p>
-                  )}
-                  {notice && <p className="form-notice" role="status">{notice}</p>}
-                  <button className="btn btn-primary primary-button" type="submit" disabled={isVerifyingCode}>
-                    {isVerifyingCode
-                      ? 'Verifying code…'
-                      : authMode === 'signup'
-                        ? 'Verify and continue'
-                        : 'Sign in'}
-                    {!isVerifyingCode && <span aria-hidden="true">→</span>}
-                  </button>
-                  <p className="resend-prompt">
-                    Didn’t get a code? <button type="button" onClick={sendVerificationCode} disabled={isSendingCode}>
-                      {isSendingCode ? 'Sending…' : 'Resend code'}
-                    </button>
-                  </p>
-                  <button className="text-button change-number" type="button" onClick={changePhoneNumber}>
-                    ← Change phone number
-                  </button>
-                </form>
               ) : step === 'profile' ? (
                 <form className="signup-form d-flex flex-column" onSubmit={handleSaveProfile} noValidate>
-                  <div className="verified-phone">
-                    <span>VERIFIED PHONE</span>
-                    <strong>{user?.phoneNumber}</strong>
+                  <div className="account-email">
+                    <span>ACCOUNT EMAIL</span>
+                    <strong>{user?.email}</strong>
                   </div>
                   <label className="form-label" htmlFor="full-name">Your full name</label>
                   <input
@@ -670,16 +597,6 @@ function App() {
                     value={profile.fullName}
                     onChange={updateProfile('fullName')}
                     required
-                  />
-                  <label className="form-label onboarding-label" htmlFor="email">Email address <span>(optional)</span></label>
-                  <input
-                    className="form-control onboarding-control"
-                    id="email"
-                    type="email"
-                    autoComplete="email"
-                    placeholder="you@hotel.com"
-                    value={profile.email}
-                    onChange={updateProfile('email')}
                   />
                   <label className="form-label onboarding-label" htmlFor="role">Your role</label>
                   <select
@@ -803,13 +720,13 @@ function App() {
                 </form>
               )}
 
-              {(step === 'phone' || step === 'otp') && (
+              {step === 'auth' && (
                 <div className="secure-note">
                   <svg viewBox="0 0 20 20" fill="none" aria-hidden="true">
                     <path d="M10 2.5 3.75 5v4.17c0 3.77 2.67 7.3 6.25 8.33 3.58-1.03 6.25-4.56 6.25-8.33V5L10 2.5Z" />
                     <path d="m7.5 10 1.67 1.67L12.92 8" />
                   </svg>
-                  <span>Your number stays private and secure.</span>
+                  <span>Your password is protected by Firebase Authentication.</span>
                 </div>
               )}
             </>

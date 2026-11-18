@@ -15,7 +15,7 @@ if (!process.env.DATABASE_URL) {
 }
 
 if (!projectId) {
-  throw new Error('FIREBASE_PROJECT_ID is required to verify Firebase phone-auth tokens.')
+  throw new Error('FIREBASE_PROJECT_ID is required to verify Firebase Auth tokens.')
 }
 
 const firebaseApp = getApps().length > 0
@@ -44,8 +44,8 @@ async function requireFirebaseUser(req, res, next) {
 
   try {
     const decodedToken = await firebaseAuth.verifyIdToken(match[1])
-    if (!decodedToken.phone_number) {
-      res.status(401).json({ error: 'A verified phone number is required.' })
+    if (typeof decodedToken.email !== 'string' || !decodedToken.email) {
+      res.status(401).json({ error: 'A Firebase email account is required.' })
       return
     }
 
@@ -109,7 +109,6 @@ app.get('/api/onboarding', requireFirebaseUser, async (req, res) => {
         admin.full_name,
         admin.email,
         admin.role,
-        admin.phone_number,
         hotel.id::text AS hotel_id,
         hotel.name AS hotel_name,
         hotel.property_type,
@@ -137,7 +136,6 @@ app.get('/api/onboarding', requireFirebaseUser, async (req, res) => {
         fullName: row.full_name,
         email: row.email || '',
         role: row.role,
-        phoneNumber: row.phone_number,
       },
       hotel: mapHotel(row),
     })
@@ -150,7 +148,7 @@ app.get('/api/onboarding', requireFirebaseUser, async (req, res) => {
 app.get('/api/onboarding/profile', requireFirebaseUser, async (req, res) => {
   try {
     const result = await pool.query(
-      `SELECT full_name, email, role, phone_number
+      `SELECT full_name, email, role
        FROM admin_users
        WHERE firebase_uid = $1`,
       [req.firebaseUser.uid],
@@ -163,7 +161,6 @@ app.get('/api/onboarding/profile', requireFirebaseUser, async (req, res) => {
           fullName: row.full_name,
           email: row.email || '',
           role: row.role,
-          phoneNumber: row.phone_number,
         }
         : null,
     })
@@ -175,7 +172,7 @@ app.get('/api/onboarding/profile', requireFirebaseUser, async (req, res) => {
 
 app.put('/api/onboarding/profile', requireFirebaseUser, async (req, res) => {
   const fullName = readString(req.body?.fullName, 120)
-  const email = readString(req.body?.email || '', 254)
+  const email = readString(req.firebaseUser.email, 254)
   const role = readString(req.body?.role, 40)
   const allowedRoles = ['Owner', 'General manager', 'Front desk manager', 'Other']
 
@@ -184,8 +181,8 @@ app.put('/api/onboarding/profile', requireFirebaseUser, async (req, res) => {
     return
   }
 
-  if (email === null || (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))) {
-    res.status(400).json({ error: 'Enter a valid email address or leave it blank.' })
+  if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    res.status(400).json({ error: 'A valid Firebase account email is required.' })
     return
   }
 
@@ -196,19 +193,17 @@ app.put('/api/onboarding/profile', requireFirebaseUser, async (req, res) => {
 
   try {
     await pool.query(
-      `INSERT INTO admin_users (firebase_uid, phone_number, full_name, email, role)
-       VALUES ($1, $2, $3, $4, $5)
+      `INSERT INTO admin_users (firebase_uid, full_name, email, role)
+       VALUES ($1, $2, $3, $4)
        ON CONFLICT (firebase_uid) DO UPDATE SET
-         phone_number = EXCLUDED.phone_number,
          full_name = EXCLUDED.full_name,
          email = EXCLUDED.email,
          role = EXCLUDED.role,
          updated_at = NOW()`,
       [
         req.firebaseUser.uid,
-        req.firebaseUser.phone_number,
         fullName,
-        email || null,
+        email,
         role,
       ],
     )
@@ -218,7 +213,6 @@ app.put('/api/onboarding/profile', requireFirebaseUser, async (req, res) => {
         fullName,
         email,
         role,
-        phoneNumber: req.firebaseUser.phone_number,
       },
     })
   } catch (error) {

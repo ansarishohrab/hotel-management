@@ -1,6 +1,6 @@
 CREATE TABLE IF NOT EXISTS admin_users (
   firebase_uid TEXT PRIMARY KEY,
-  phone_number TEXT NOT NULL,
+  phone_number TEXT,
   full_name VARCHAR(120) NOT NULL,
   email VARCHAR(254),
   role VARCHAR(40) NOT NULL CHECK (
@@ -10,6 +10,8 @@ CREATE TABLE IF NOT EXISTS admin_users (
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+ALTER TABLE admin_users ALTER COLUMN phone_number DROP NOT NULL;
 
 CREATE TABLE IF NOT EXISTS hotels (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
