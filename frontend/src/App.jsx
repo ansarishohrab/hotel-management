@@ -8,6 +8,7 @@ import {
 } from '@firebase/auth'
 import { auth } from './firebase'
 import { ApiError, getOnboarding, saveHotel, saveProfile } from './api'
+import RoomDashboard from './RoomDashboard'
 import './App.css'
 
 const initialProfile = {
@@ -379,6 +380,17 @@ function App() {
   }
 
   const currentStepNumber = step === 'auth' ? 1 : step === 'profile' ? 2 : 3
+
+  if (!isCheckingSession && user && step === 'done') {
+    return (
+      <RoomDashboard
+        user={user}
+        hotel={hotel}
+        onSignOut={handleSignOut}
+        onEditHotel={() => setStep('hotel')}
+      />
+    )
+  }
 
   return (
     <main className="signup-shell container-fluid p-0">

@@ -69,3 +69,32 @@ export function saveHotel(user, hotel) {
     body: JSON.stringify(hotel),
   }).then((data) => data.hotel)
 }
+
+export function getRooms(user) {
+  return requestApi(user, '/rooms')
+}
+
+export function createRoom(user, room) {
+  return requestApi(user, '/rooms', {
+    method: 'POST',
+    body: JSON.stringify(room),
+  }).then((data) => data.room)
+}
+
+export function getBookings(user) {
+  return requestApi(user, '/bookings').then((data) => data.bookings)
+}
+
+export function createBooking(user, booking) {
+  return requestApi(user, '/bookings', {
+    method: 'POST',
+    body: JSON.stringify(booking),
+  }).then((data) => data.booking)
+}
+
+export function updateBookingStatus(user, bookingId, status) {
+  return requestApi(user, `/bookings/${bookingId}/status`, {
+    method: 'PATCH',
+    body: JSON.stringify({ status }),
+  }).then((data) => data.booking)
+}

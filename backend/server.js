@@ -92,6 +92,64 @@ function mapHotel(row) {
   }
 }
 
+function mapRoom(row) {
+  return {
+    id: row.id,
+    roomNumber: row.room_number,
+    roomType: row.room_type,
+    capacity: row.capacity,
+    nightlyRate: Number(row.nightly_rate),
+    status: row.status,
+  }
+}
+
+function isDateOnly(value) {
+  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false
+  const parsedDate = new Date(`${value}T00:00:00.000Z`)
+  return !Number.isNaN(parsedDate.getTime()) && parsedDate.toISOString().slice(0, 10) === value
+}
+
+function mapBooking(row) {
+  return {
+    id: row.id,
+    roomId: row.room_id,
+    roomNumber: row.room_number,
+    roomType: row.room_type,
+    guestName: row.guest_name,
+    guestEmail: row.guest_email || '',
+    guestPhone: row.guest_phone || '',
+    guestCount: row.guest_count,
+    checkInDate: row.check_in_date,
+    checkOutDate: row.check_out_date,
+    nightlyRate: Number(row.nightly_rate),
+    status: row.status,
+    checkedInAt: row.checked_in_at,
+    checkedOutAt: row.checked_out_at,
+    createdAt: row.created_at,
+  }
+}
+
+const bookingSelect = `SELECT
+  booking.id::text,
+  booking.room_id::text,
+  room.room_number,
+  room.room_type,
+  booking.guest_name,
+  booking.guest_email,
+  booking.guest_phone,
+  booking.guest_count,
+  booking.check_in_date::text,
+  booking.check_out_date::text,
+  booking.nightly_rate,
+  booking.status,
+  booking.checked_in_at,
+  booking.checked_out_at,
+  booking.created_at
+FROM bookings AS booking
+JOIN rooms AS room
+  ON room.id = booking.room_id
+  AND room.hotel_id = booking.hotel_id`
+
 app.get('/api/health', async (req, res) => {
   try {
     await pool.query('SELECT 1')
@@ -99,6 +157,402 @@ app.get('/api/health', async (req, res) => {
   } catch (error) {
     console.error('PostgreSQL health check failed:', error)
     res.status(503).json({ status: 'error', database: 'unavailable' })
+  }
+})
+
+app.get('/api/rooms', requireFirebaseUser, async (req, res) => {
+  try {
+    const hotelResult = await pool.query(
+      `SELECT hotel.id::text AS hotel_id, hotel.name, hotel.city
+       FROM admin_users AS admin
+       JOIN hotels AS hotel
+         ON hotel.id = admin.primary_hotel_id
+         AND hotel.owner_uid = admin.firebase_uid
+       WHERE admin.firebase_uid = $1`,
+      [req.firebaseUser.uid],
+    )
+    const hotel = hotelResult.rows[0]
+
+    if (!hotel) {
+      res.status(409).json({ error: 'Save your hotel details before managing rooms.' })
+      return
+    }
+
+    const roomsResult = await pool.query(
+      `SELECT id::text, room_number, room_type, capacity, nightly_rate, status
+       FROM rooms
+       WHERE hotel_id = $1
+       ORDER BY room_number`,
+      [hotel.hotel_id],
+    )
+
+    res.json({
+      hotel: { id: hotel.hotel_id, name: hotel.name, city: hotel.city },
+      rooms: roomsResult.rows.map(mapRoom),
+    })
+  } catch (error) {
+    console.error('Could not load PostgreSQL rooms:', error)
+    res.status(500).json({ error: 'Could not load your rooms.' })
+  }
+})
+
+app.post('/api/rooms', requireFirebaseUser, async (req, res) => {
+  const roomNumber = readString(req.body?.roomNumber, 20)
+  const roomType = readString(req.body?.roomType, 40)
+  const capacity = req.body?.capacity
+  const nightlyRate = req.body?.nightlyRate
+  const allowedRoomTypes = ['Standard', 'Deluxe', 'Suite', 'Family']
+
+  if (!roomNumber) {
+    res.status(400).json({ error: 'Enter a room number.' })
+    return
+  }
+
+  if (!allowedRoomTypes.includes(roomType)) {
+    res.status(400).json({ error: 'Choose a valid room type.' })
+    return
+  }
+
+  if (!Number.isInteger(capacity) || capacity < 1 || capacity > 12) {
+    res.status(400).json({ error: 'Guest capacity must be between 1 and 12.' })
+    return
+  }
+
+  if (typeof nightlyRate !== 'number' || !Number.isFinite(nightlyRate) || nightlyRate <= 0 || nightlyRate > 99999999) {
+    res.status(400).json({ error: 'Enter a valid nightly rate greater than zero.' })
+    return
+  }
+
+  try {
+    const hotelResult = await pool.query(
+      `SELECT hotel.id::text AS hotel_id
+       FROM admin_users AS admin
+       JOIN hotels AS hotel
+         ON hotel.id = admin.primary_hotel_id
+         AND hotel.owner_uid = admin.firebase_uid
+       WHERE admin.firebase_uid = $1`,
+      [req.firebaseUser.uid],
+    )
+    const hotel = hotelResult.rows[0]
+
+    if (!hotel) {
+      res.status(409).json({ error: 'Save your hotel details before adding rooms.' })
+      return
+    }
+
+    const roomResult = await pool.query(
+      `INSERT INTO rooms (hotel_id, room_number, room_type, capacity, nightly_rate)
+       VALUES ($1, $2, $3, $4, $5)
+       RETURNING id::text, room_number, room_type, capacity, nightly_rate, status`,
+      [hotel.hotel_id, roomNumber, roomType, capacity, nightlyRate],
+    )
+
+    res.status(201).json({ room: mapRoom(roomResult.rows[0]) })
+  } catch (error) {
+    if (error.code === '23505') {
+      res.status(409).json({ error: 'That room number already exists in your hotel.' })
+      return
+    }
+
+    console.error('Could not save PostgreSQL room:', error)
+    res.status(500).json({ error: 'Could not save the room.' })
+  }
+})
+
+app.get('/api/bookings', requireFirebaseUser, async (req, res) => {
+  try {
+    const result = await pool.query(
+      `${bookingSelect}
+       JOIN hotels AS hotel
+         ON hotel.id = booking.hotel_id
+         AND hotel.owner_uid = $1
+       JOIN admin_users AS admin
+         ON admin.firebase_uid = $1
+         AND admin.primary_hotel_id = hotel.id
+       ORDER BY booking.check_in_date, booking.created_at DESC`,
+      [req.firebaseUser.uid],
+    )
+
+    res.json({ bookings: result.rows.map(mapBooking) })
+  } catch (error) {
+    console.error('Could not load PostgreSQL bookings:', error)
+    res.status(500).json({ error: 'Could not load your bookings.' })
+  }
+})
+
+app.post('/api/bookings', requireFirebaseUser, async (req, res) => {
+  const roomId = req.body?.roomId
+  const guestName = readString(req.body?.guestName, 120)
+  const guestEmail = req.body?.guestEmail == null ? '' : readString(req.body.guestEmail, 254)
+  const guestPhone = req.body?.guestPhone == null ? '' : readString(req.body.guestPhone, 32)
+  const guestCount = req.body?.guestCount
+  const checkInDate = req.body?.checkInDate
+  const checkOutDate = req.body?.checkOutDate
+
+  if (typeof roomId !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(roomId)) {
+    res.status(400).json({ error: 'Choose a valid room.' })
+    return
+  }
+
+  if (!guestName || guestName.length < 2) {
+    res.status(400).json({ error: 'Enter the guest’s name.' })
+    return
+  }
+
+  if (guestEmail === null || (guestEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(guestEmail))) {
+    res.status(400).json({ error: 'Enter a valid guest email address.' })
+    return
+  }
+
+  if (guestPhone === null) {
+    res.status(400).json({ error: 'Enter a valid guest phone number.' })
+    return
+  }
+
+  if (!Number.isInteger(guestCount) || guestCount < 1 || guestCount > 12) {
+    res.status(400).json({ error: 'Guest count must be between 1 and 12.' })
+    return
+  }
+
+  if (!isDateOnly(checkInDate) || !isDateOnly(checkOutDate) || checkOutDate <= checkInDate) {
+    res.status(400).json({ error: 'Choose valid arrival and departure dates. Departure must be after arrival.' })
+    return
+  }
+
+  const client = await pool.connect()
+
+  try {
+    await client.query('BEGIN')
+    const hotelResult = await client.query(
+      `SELECT hotel.id::text AS hotel_id
+       FROM admin_users AS admin
+       JOIN hotels AS hotel
+         ON hotel.id = admin.primary_hotel_id
+         AND hotel.owner_uid = admin.firebase_uid
+       WHERE admin.firebase_uid = $1`,
+      [req.firebaseUser.uid],
+    )
+    const hotel = hotelResult.rows[0]
+
+    if (!hotel) {
+      throw new HttpError(409, 'Save your hotel details before creating a booking.')
+    }
+
+    const roomResult = await client.query(
+      `SELECT id::text, capacity, nightly_rate, status
+       FROM rooms
+       WHERE id = $1 AND hotel_id = $2
+       FOR UPDATE`,
+      [roomId, hotel.hotel_id],
+    )
+    const room = roomResult.rows[0]
+
+    if (!room) {
+      throw new HttpError(404, 'That room could not be found in your hotel.')
+    }
+
+    if (guestCount > room.capacity) {
+      throw new HttpError(400, `This room accommodates up to ${room.capacity} guests.`)
+    }
+
+    if (['Cleaning', 'Maintenance'].includes(room.status)) {
+      throw new HttpError(409, 'This room is not currently available for booking.')
+    }
+
+    const overlapResult = await client.query(
+      `SELECT id
+       FROM bookings
+       WHERE room_id = $1
+         AND status <> 'Cancelled'
+         AND COALESCE(checked_in_at::date, check_in_date) < $3::date
+         AND CASE
+           WHEN status = 'Checked-out' THEN checked_out_at::date
+           ELSE check_out_date
+         END > $2::date
+       LIMIT 1`,
+      [roomId, checkInDate, checkOutDate],
+    )
+
+    if (overlapResult.rowCount > 0) {
+      throw new HttpError(409, 'This room already has a booking for some of those dates.')
+    }
+
+    const insertResult = await client.query(
+      `INSERT INTO bookings (
+        hotel_id, room_id, created_by_uid, guest_name, guest_email, guest_phone,
+        guest_count, check_in_date, check_out_date, nightly_rate
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+      RETURNING id::text`,
+      [
+        hotel.hotel_id,
+        roomId,
+        req.firebaseUser.uid,
+        guestName,
+        guestEmail || null,
+        guestPhone || null,
+        guestCount,
+        checkInDate,
+        checkOutDate,
+        room.nightly_rate,
+      ],
+    )
+    const savedBookingResult = await client.query(
+      `${bookingSelect} WHERE booking.id = $1`,
+      [insertResult.rows[0].id],
+    )
+    await client.query('COMMIT')
+
+    res.status(201).json({ booking: mapBooking(savedBookingResult.rows[0]) })
+  } catch (error) {
+    try {
+      await client.query('ROLLBACK')
+    } catch (rollbackError) {
+      console.error('PostgreSQL booking transaction rollback failed:', rollbackError)
+    }
+
+    if (error instanceof HttpError) {
+      res.status(error.status).json({ error: error.message })
+      return
+    }
+
+    console.error('Could not save PostgreSQL booking:', error)
+    res.status(500).json({ error: 'Could not save your booking.' })
+  } finally {
+    client.release()
+  }
+})
+
+app.patch('/api/bookings/:bookingId/status', requireFirebaseUser, async (req, res) => {
+  const bookingId = req.params.bookingId
+  const nextStatus = req.body?.status
+  const allowedStatuses = ['Checked-in', 'Checked-out', 'Cancelled']
+
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(bookingId)) {
+    res.status(400).json({ error: 'The booking ID is invalid.' })
+    return
+  }
+
+  if (!allowedStatuses.includes(nextStatus)) {
+    res.status(400).json({ error: 'Choose a valid booking status.' })
+    return
+  }
+
+  const client = await pool.connect()
+
+  try {
+    await client.query('BEGIN')
+    const currentResult = await client.query(
+      `SELECT booking.id::text, booking.room_id::text, booking.hotel_id::text,
+        booking.status, booking.guest_name, booking.guest_email, booking.guest_phone,
+        booking.guest_count, booking.check_in_date::text, booking.check_out_date::text,
+        booking.nightly_rate, booking.checked_in_at, booking.checked_out_at,
+        booking.created_at, room.room_number, room.room_type, room.status AS room_status
+       FROM bookings AS booking
+       JOIN rooms AS room
+         ON room.id = booking.room_id
+         AND room.hotel_id = booking.hotel_id
+       JOIN hotels AS hotel
+         ON hotel.id = booking.hotel_id
+         AND hotel.owner_uid = $2
+       JOIN admin_users AS admin
+         ON admin.firebase_uid = $2
+         AND admin.primary_hotel_id = hotel.id
+       WHERE booking.id = $1
+       FOR UPDATE OF booking, room`,
+      [bookingId, req.firebaseUser.uid],
+    )
+    const booking = currentResult.rows[0]
+
+    if (!booking) {
+      throw new HttpError(404, 'That booking could not be found for your hotel.')
+    }
+
+    if (nextStatus === 'Checked-in') {
+      if (booking.status !== 'Booked') {
+        throw new HttpError(409, 'Only a booked reservation can be checked in.')
+      }
+
+      if (booking.room_status !== 'Available') {
+        throw new HttpError(409, 'This room is not ready for check-in.')
+      }
+
+      const currentStayResult = await client.query(
+        `SELECT id
+         FROM bookings
+         WHERE room_id = $1
+           AND id <> $2
+           AND status = 'Booked'
+           AND check_in_date <= CURRENT_DATE
+           AND check_out_date > CURRENT_DATE
+         LIMIT 1`,
+        [booking.room_id, bookingId],
+      )
+
+      if (currentStayResult.rowCount > 0) {
+        throw new HttpError(409, 'Another guest has a reservation for this room today.')
+      }
+
+      await client.query(
+        `UPDATE bookings
+         SET status = 'Checked-in', checked_in_at = NOW(), updated_at = NOW()
+         WHERE id = $1`,
+        [bookingId],
+      )
+      await client.query(
+        `UPDATE rooms SET status = 'Occupied', updated_at = NOW()
+         WHERE id = $1`,
+        [booking.room_id],
+      )
+    } else if (nextStatus === 'Checked-out') {
+      if (booking.status !== 'Checked-in') {
+        throw new HttpError(409, 'Check in the guest before checking them out.')
+      }
+
+      await client.query(
+        `UPDATE bookings
+         SET status = 'Checked-out', checked_out_at = NOW(), updated_at = NOW()
+         WHERE id = $1`,
+        [bookingId],
+      )
+      await client.query(
+        `UPDATE rooms SET status = 'Available', updated_at = NOW()
+         WHERE id = $1`,
+        [booking.room_id],
+      )
+    } else {
+      if (booking.status !== 'Booked') {
+        throw new HttpError(409, 'Only a booked reservation can be cancelled.')
+      }
+
+      await client.query(
+        `UPDATE bookings SET status = 'Cancelled', updated_at = NOW()
+         WHERE id = $1`,
+        [bookingId],
+      )
+    }
+
+    const savedBookingResult = await client.query(
+      `${bookingSelect} WHERE booking.id = $1`,
+      [bookingId],
+    )
+    await client.query('COMMIT')
+    res.json({ booking: mapBooking(savedBookingResult.rows[0]) })
+  } catch (error) {
+    try {
+      await client.query('ROLLBACK')
+    } catch (rollbackError) {
+      console.error('PostgreSQL booking status transaction rollback failed:', rollbackError)
+    }
+
+    if (error instanceof HttpError) {
+      res.status(error.status).json({ error: error.message })
+      return
+    }
+
+    console.error('Could not update PostgreSQL booking status:', error)
+    res.status(500).json({ error: 'Could not update the booking status.' })
+  } finally {
+    client.release()
   }
 })
 

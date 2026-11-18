@@ -4,8 +4,8 @@ A hotel property-management system, developed one verified feature at a time.
 
 ## Current scaffold
 
-- `frontend/`: React and Vite web client.
-- `backend/`: Express API with `GET /api/health`.
+- `frontend/`: React and Vite web client with account onboarding, room inventory, and reservation check-in/check-out management.
+- `backend/`: Express API with authenticated, hotel-scoped room and booking endpoints and `GET /api/health`.
 - `docs/`: requirements, architecture, roadmap, backlog, status, decisions, and test strategy.
 
 ## Run locally
@@ -46,7 +46,7 @@ use Firestore.
    characters in the database password.
 3. Configure `frontend/.env.local` as described above.
 4. Start the API with `npm --prefix backend start`. On startup it creates the
-   required `admin_users` and `hotels` tables if they do not exist. The API
+   required `admin_users`, `hotels`, `rooms`, and `bookings` tables if they do not exist. The API
    verifies Firebase ID tokens before accessing user-owned records.
 5. Start the frontend with `npm --prefix frontend run dev`. Vite proxies `/api`
    requests to the local API at `http://127.0.0.1:3000`.
